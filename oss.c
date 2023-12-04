@@ -319,7 +319,53 @@ int main(int argc, char *argv[]) {
                 numActiveProcesses++;
                 numLaunchedProcesses++;
 
-                // TODO: Set up its page table and frame table entries
+                // Find an empty page table entry
+                int pageTableEntry = -1;
+                for (int i = 0; i < NUM_PAGES_PER_PROCESS * MAX_PROCESSES; i++) {
+                    if (pageTable[i].pid == -1) {
+                        pageTableEntry = i;
+                        break;
+                    }
+                }
+
+                // If no empty page table entry was found
+                if (pageTableEntry == -1) {
+                    perror("oss: Error: Failed to find empty page table entry");
+                    exit(EXIT_FAILURE);
+                }
+
+                // Fill out page table entry
+                pageTable[pageTableEntry].pid = pid;
+                pageTable[pageTableEntry].frame = -1;
+                pageTable[pageTableEntry].dirty = 0;
+                pageTable[pageTableEntry].valid = 1;
+                pageTable[pageTableEntry].referenced = 0;
+
+                // Find an empty frame table entry
+                int frameTableEntry = -1;
+                for (int i = 0; i < NUM_FRAMES; i++) {
+                    if (frameTable[i].occupied == 0) {
+                        frameTableEntry = i;
+                        break;
+                    }
+                }
+
+                // If no empty frame table entry was found
+                if (frameTableEntry == -1) {
+                    perror("oss: Error: Failed to find empty frame table entry");
+                    exit(EXIT_FAILURE);
+                }
+
+                // Fill out frame table entry
+                frameTable[frameTableEntry].occupied = 1;
+                frameTable[frameTableEntry].page = pageTableEntry;
+                frameTable[frameTableEntry].dirty = 0;
+                frameTable[frameTableEntry].valid = 1;
+                frameTable[frameTableEntry].headOfQueue = 0;
+
+                // Update page table entry with frame table entry
+                pageTable[pageTableEntry].frame = frameTableEntry;
+
 
             // Error
             } else {
@@ -331,7 +377,7 @@ int main(int argc, char *argv[]) {
         // TODO: Check to see if event wait for a child is now finished and it gets granted its request. ie: Its page is swapped in.
 
         // TODO: Check if we have a message from a child. If so, and there is not a page fault, send a message back. If there is a pagefault, set up its waiting for an event.
-        
+
 
         // Every half a second, output the page table, frame table, and process table to the logfile and to the screen.
         if (nextOutputTime <= getClockTime()) {
@@ -339,13 +385,19 @@ int main(int argc, char *argv[]) {
             // Output page table
             printf("OSS: Page table:\n");
             for (int i = 0; i < NUM_PAGES_PER_PROCESS * MAX_PROCESSES; i++) {
-                printf("OSS: Page table entry %d: pid=%d, frame=%d, dirty=%d, valid=%d, referenced=%d\n", i, pageTable[i].pid, pageTable[i].frame, pageTable[i].dirty, pageTable[i].valid, pageTable[i].referenced);
+                // Only print if valid
+                if (pageTable[i].valid == 1) {
+                    printf("OSS: Page table entry %d: pid=%d, frame=%d, dirty=%d, valid=%d, referenced=%d\n", i, pageTable[i].pid, pageTable[i].frame, pageTable[i].dirty, pageTable[i].valid, pageTable[i].referenced);
+                }
             }
 
             // Output frame table
             printf("OSS: Frame table:\n");
             for (int i = 0; i < NUM_FRAMES; i++) {
-                printf("OSS: Frame table entry %d: occupied=%d, page=%d, dirty=%d, valid=%d, headOfQueue=%d\n", i, frameTable[i].occupied, frameTable[i].page, frameTable[i].dirty, frameTable[i].valid, frameTable[i].headOfQueue);
+                // Only print if occupied
+                if (frameTable[i].occupied == 1) {
+                    printf("OSS: Frame table entry %d: occupied=%d, page=%d, dirty=%d, valid=%d, headOfQueue=%d\n", i, frameTable[i].occupied, frameTable[i].page, frameTable[i].dirty, frameTable[i].valid, frameTable[i].headOfQueue);
+                }
             }
 
             // Output process table
