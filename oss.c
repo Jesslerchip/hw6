@@ -22,7 +22,7 @@ struct msgbuf inbox, outbox;
 // Init shared memory
 void initSharedMemory() {
     // Get shared memory
-    shmid = shmget(SHMKEY, sizeof(struct SystemClock), 0666);
+    shmid = shmget(SHMKEY, sizeof(struct SystemClock), IPC_CREAT | 0666);
     if (shmid == -1) {
         perror("oss: Error: Failed to get shared memory");
         exit(EXIT_FAILURE);
@@ -46,7 +46,7 @@ void initSystemClock() {
 // Init message queue
 void initMessageQueue() {
     // Get message queue
-    msqid = msgget(MSGKEY, 0666);
+    msqid = msgget(MSGKEY, IPC_CREAT | 0666);
     if (msqid == -1) {
         perror("oss: Error: Failed to get message queue");
         exit(EXIT_FAILURE);
@@ -196,21 +196,33 @@ int main(int argc, char *argv[]) {
     srand(time(NULL));
 
     /* INITIALIZE */
+
+    printf("OSS: Initializing...\n");
     
     // Init shared memory
     initSharedMemory();
-    
+
+    printf("OSS: Shared memory initialized\n");
+
     // Init system clock
     initSystemClock();
+
+    printf("OSS: System clock initialized\n");
     
     // Init message queue
     initMessageQueue();
+
+    printf("OSS: Message queue initialized\n");
     
     // Init page table
     initPageTable();
+
+    printf("OSS: Page table initialized\n");
     
     // Init frame table
     initFrameTable();
+
+    printf("OSS: Frame table initialized\n");
 
     // Init signal handlers
 	signal(SIGINT, handleSignal);
@@ -265,9 +277,89 @@ int main(int argc, char *argv[]) {
 
     /* END ARGUMENTS */
 
-    /* MAIN LOOP */
+    /* VARIABLES */
 
-    // TODO: Implement main loop
+    int numActiveProcesses = 0; // Number of active processes
+    int numLaunchedProcesses = 0; // Number of launched processes
+    int nextOutputTime = 0; // Next time to output stats to the log file and screen
+
+    /* MAIN LOOP */   
+
+    while (numActiveProcesses > 0 || (numLaunchedProcesses < n && numLaunchedProcesses <= 100)) {
+        
+        // Do a nonblocking waitpid to see if a child process has terminated. If so, free up its resources
+        if (numActiveProcesses > 0) {
+            // Check if a child process has terminated
+            pid_t pid = waitpid(-1, NULL, WNOHANG);
+
+            // If a child process has terminated
+            if (pid > 0) {
+                // Decrement number of active processes
+                numActiveProcesses--;
+
+                // Free up its resources
+                // TODO
+            }
+        }
+        
+        // Determine if a new process should be launched
+        if (numActiveProcesses < s && numActiveProcesses < MAX_PROCESSES) {
+            // Launch a new process
+            pid_t pid = fork();
+
+            // Child process code
+            if (pid == 0) { 
+                execl("./worker", "worker", NULL);
+                exit(0);
+
+            // Parent process code
+            } else if (pid > 0) {
+
+                // Increment number of active processes and launched processes
+                numActiveProcesses++;
+                numLaunchedProcesses++;
+
+                // TODO: Set up its page table and frame table entries
+
+            // Error
+            } else {
+                perror("oss: Error: Failed to fork");
+                exit(EXIT_FAILURE);
+            }
+        }
+
+        // TODO: Check to see if event wait for a child is now finished and it gets granted its request. ie: Its page is swapped in.
+
+        // TODO: Check if we have a message from a child. If so, and there is not a page fault, send a message back. If there is a pagefault, set up its waiting for an event.
+        
+
+        // Every half a second, output the page table, frame table, and process table to the logfile and to the screen.
+        if (nextOutputTime <= getClockTime()) {
+            
+            // Output page table
+            printf("OSS: Page table:\n");
+            for (int i = 0; i < NUM_PAGES_PER_PROCESS * MAX_PROCESSES; i++) {
+                printf("OSS: Page table entry %d: pid=%d, frame=%d, dirty=%d, valid=%d, referenced=%d\n", i, pageTable[i].pid, pageTable[i].frame, pageTable[i].dirty, pageTable[i].valid, pageTable[i].referenced);
+            }
+
+            // Output frame table
+            printf("OSS: Frame table:\n");
+            for (int i = 0; i < NUM_FRAMES; i++) {
+                printf("OSS: Frame table entry %d: occupied=%d, page=%d, dirty=%d, valid=%d, headOfQueue=%d\n", i, frameTable[i].occupied, frameTable[i].page, frameTable[i].dirty, frameTable[i].valid, frameTable[i].headOfQueue);
+            }
+
+            // Output process table
+            printf("OSS: Process table:\n");
+            for (int i = 0; i < MAX_PROCESSES; i++) {
+                printf("OSS: Process table entry %d: pid=%d, pageFault=%d, waitingForEvent=%d\n", i, i, 0, 0);
+            }
+
+            // Set next output time
+            nextOutputTime += 500000000;
+        }
+
+    }
+
 
     /* END MAIN LOOP */
 }

@@ -10,10 +10,10 @@ oss: oss.o
 user_proc: user_proc.o
 	$(CC) $(CFLAGS) -o user_proc user_proc.o
 
-oss.o: oss.c
+oss.o: oss.c header.h
 	$(CC) $(CFLAGS) -c oss.c
 
-user_proc.o: user_proc.c
+user_proc.o: user_proc.c header.h
 	$(CC) $(CFLAGS) -c user_proc.c
 
 clean:
