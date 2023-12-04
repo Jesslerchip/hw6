@@ -55,8 +55,7 @@ int main(int argc, char *argv[]) {
     // Check the clock
     printf("user_proc: %d: %u:%u\n", pid, sysClock->seconds, sysClock->nanoseconds);
 
-    // Verify it has the correct resource limit
-    
+    // TODO: Verify it has the correct resource limit
     
     // Send message to oss
     outbox.mType = pid;

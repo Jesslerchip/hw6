@@ -297,19 +297,19 @@ int main(int argc, char *argv[]) {
                 // Decrement number of active processes
                 numActiveProcesses--;
 
-                // Free up its resources
-                // TODO
+                // TODO: Free up its resources
+
             }
         }
         
         // Determine if a new process should be launched
-        if (numActiveProcesses < s && numActiveProcesses < MAX_PROCESSES) {
+        if (numActiveProcesses < s && numActiveProcesses < MAX_PROCESSES && numLaunchedProcesses < n && numLaunchedProcesses <= 100) {
             // Launch a new process
             pid_t pid = fork();
 
             // Child process code
             if (pid == 0) { 
-                execl("./worker", "worker", NULL);
+                execl("./user_proc", "user_proc", NULL);
                 exit(0);
 
             // Parent process code
@@ -353,7 +353,12 @@ int main(int argc, char *argv[]) {
                 // If no empty frame table entry was found
                 if (frameTableEntry == -1) {
                     perror("oss: Error: Failed to find empty frame table entry");
-                    exit(EXIT_FAILURE);
+                    // Output frame table
+                    printf("OSS: Frame table:\n");
+                    for (int i = 0; i < NUM_FRAMES; i++) {
+                        printf("OSS: Frame table entry %d: occupied=%d, page=%d, dirty=%d, valid=%d, headOfQueue=%d\n", i, frameTable[i].occupied, frameTable[i].page, frameTable[i].dirty, frameTable[i].valid, frameTable[i].headOfQueue);
+                    }
+                exit(EXIT_FAILURE);
                 }
 
                 // Fill out frame table entry
