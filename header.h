@@ -25,7 +25,15 @@ struct SystemClock {
 // Message queue struct
 struct msgbuf {
 	long mType; // Message type
-	int mNum; // Message content
+	int mNum[2]; // Message content
+};
+
+struct PCB {
+    int occupied; // either true or false
+    pid_t pid; // process id of this child
+    int eventWaitSec; // when does its event happen?
+    int eventWaitNano; // when does its event happen?
+    int blocked; // is this process waiting on event?
 };
 
 // Page table struct
