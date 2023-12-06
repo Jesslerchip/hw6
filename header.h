@@ -28,6 +28,7 @@ struct msgbuf {
 	int mNum[2]; // Message content
 };
 
+// PCB struct
 struct PCB {
     int occupied; // either true or false
     pid_t pid; // process id of this child
@@ -39,9 +40,9 @@ struct PCB {
 // Page table struct
 struct PageTable {
     int pid; // Process ID
-    int frame; // Frame number
-    int dirty; // Dirty
-    int valid; // Valid
+    int frame; // Frame number, used for physical address
+    int dirty; // Dirty, used for dirty bit (read/write)
+    int valid; // Valid, used for valid bit (in memory)
     int referenced; // Referenced
 };
 

@@ -141,6 +141,9 @@ void initFrameTable() {
         frameTable[i].valid = 0;
         frameTable[i].headOfQueue = 0;
     }
+
+    // Set head of queue to first frame
+    frameTable[0].headOfQueue = 1;
 }
 
 /* END INIT FUNCTIONS */
@@ -329,7 +332,7 @@ int main(int argc, char *argv[]) {
     /* MAIN LOOP */   
 
     while (numActiveProcesses > 0 || (numLaunchedProcesses < n && numLaunchedProcesses <= 100)) {
-        
+
         // Determine if a new process should be launched
         if (numActiveProcesses < s && numActiveProcesses < MAX_PROCESSES && numLaunchedProcesses < n && numLaunchedProcesses <= 100) {
             // Launch a new process
@@ -351,16 +354,16 @@ int main(int argc, char *argv[]) {
                 for (int i = 0; i < NUM_PAGES_PER_PROCESS; i++) {
                     // Find an empty page table entry
                     int pageTableEntry = -1;
-                    for (int i = 0; i < NUM_PAGES_PER_PROCESS * MAX_PROCESSES; i++) {
-                        if (pageTable[i].pid == -1) {
-                            pageTableEntry = i;
+                    for (int j = 0; j < NUM_PAGES_PER_PROCESS * MAX_PROCESSES; j++) {
+                        if (pageTable[j].pid == -1) {
+                            pageTableEntry = j;
 
                             // Update page table entry
                             pageTable[pageTableEntry].pid = pid;
                             pageTable[pageTableEntry].frame = -1;
                             pageTable[pageTableEntry].dirty = 0;
                             pageTable[pageTableEntry].valid = 1;
-                            pageTable[pageTableEntry].referenced = 0;
+                            pageTable[pageTableEntry].referenced = 1;
 
                             break;
                         }
@@ -377,27 +380,18 @@ int main(int argc, char *argv[]) {
                         exit(EXIT_FAILURE);
                     }
 
-
-                }
-
-                // Frame table entry (256k of memory, each frame is 1k)
-                for (int i = 0; i < NUM_FRAMES; i++) {
                     // Find an empty frame table entry
-                    int frameTableEntry = -1;
-                    for (int i = 0; i < NUM_FRAMES; i++) {
-                        if (frameTable[i].occupied == 0) {
-                            frameTableEntry = i;
+                    int frameTableEntry = getFrameTableEntryByHeadOfQueue();
 
-                            // Update frame table entry
-                            frameTable[frameTableEntry].occupied = 1;
-                            frameTable[frameTableEntry].page = -1;
-                            frameTable[frameTableEntry].dirty = 0;
-                            frameTable[frameTableEntry].valid = 1;
-                            frameTable[frameTableEntry].headOfQueue = 0;
+                    // Update frame table entry
+                    frameTable[frameTableEntry].occupied = 1;
+                    frameTable[frameTableEntry].page = -1;
+                    frameTable[frameTableEntry].dirty = 0;
+                    frameTable[frameTableEntry].valid = 1;
+                    frameTable[frameTableEntry].headOfQueue = 0;
 
-                            break;
-                        }
-                    }
+                    // Move head of queue to the next frame
+                    frameTable[(frameTableEntry + 1) % NUM_FRAMES].headOfQueue = 1;
 
                     // If no empty frame table entry was found
                     if (frameTableEntry == -1) {
@@ -409,7 +403,17 @@ int main(int argc, char *argv[]) {
                         }
                         exit(EXIT_FAILURE);
                     }
+
+                    // Update page table entry and frame table entry to point to each other
+                    pageTable[pageTableEntry].frame = frameTableEntry;
+                    frameTable[frameTableEntry].page = pageTableEntry;
+
+                    // Simulate time spent swapping in the page
+                    advanceClock(14000000);
+
+
                 }
+
 
                 // Add process to PCB
                 for (int i = 0; i < MAX_PROCESSES; i++) {
@@ -458,7 +462,7 @@ int main(int argc, char *argv[]) {
         }
 
         // Check if we have a message from a child. If so, and there is not a page fault, send a message back. If there is a pagefault, set up its waiting for an event.
-        if (msgrcv(msqid, &inbox, sizeof(inbox.mNum), 0, IPC_NOWAIT) != -1) {
+        if (msgrcv(msqid, &inbox, sizeof(inbox), 1, IPC_NOWAIT) != -1) {
             // Check if the message is a terminate message
             if (inbox.mNum[0] < 0) {
                 // Free up its resources and log its termination
@@ -504,17 +508,37 @@ int main(int argc, char *argv[]) {
 
             // If the message is not a terminate message
             } else {
-                // Determine if there is a page fault
+                // Extract the page from the message
+                int page = inbox.mNum[0] / 1024;
+
+                // Determine if there is a page fault by checking if the requested page is in a frame
                 int pageFault = 0;
-                for (int i = 0; i < NUM_PAGES_PER_PROCESS * MAX_PROCESSES; i++) {
-                    if (pageTable[i].pid == inbox.mType && pageTable[i].valid == 1 && pageTable[i].frame == -1) {
-                        pageFault = 1;
-                        break;
-                    }
+                if (pageTable[page].valid == 0 || pageTable[page].frame == -1) {
+                    pageFault = 1;
                 }
+
 
                 // If there is not a page fault
                 if (pageFault == 0) {
+                    // Check if the message is a read or write
+                    if (inbox.mNum[1] == 1) {
+                        // Set dirty bit
+                        for (int i = 0; i < NUM_PAGES_PER_PROCESS * MAX_PROCESSES; i++) {
+                            if (pageTable[i].pid == inbox.mType && pageTable[i].valid == 1 && pageTable[i].frame != -1) {
+                                pageTable[i].dirty = 1;
+
+                                // Add 20ms to simulated clock to simulate write time
+                                advanceClock(20000000);
+
+                                break;
+                            }
+                        }
+                    }
+
+                    // Update page table entry
+                    pageTable[page].referenced = 1;
+
+
                     // Send message back to child
                     outbox.mType = inbox.mType;
                     outbox.mNum[0] = 0;
@@ -638,7 +662,7 @@ int main(int argc, char *argv[]) {
             // Output process table
             printf("OSS: Process table:\n");
             for (int i = 0; i < MAX_PROCESSES; i++) {
-                printf("OSS: Process table entry %d: pid=%d, pageFault=%d, waitingForEvent=%d\n", i, i, 0, 0);
+                printf("OSS: Process table entry %d: occupied=%d, pid=%d, eventWaitSec=%d, eventWaitNano=%d, blocked=%d\n", i, processTable[i].occupied, processTable[i].pid, processTable[i].eventWaitSec, processTable[i].eventWaitNano, processTable[i].blocked);
             }
 
             // Set next output time

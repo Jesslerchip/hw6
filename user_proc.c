@@ -84,7 +84,7 @@ int main(int argc, char *argv[]) {
         }
 
         // Send message to oss with address and read/write
-        outbox.mType = getpid();
+        outbox.mType = 1;
         outbox.mNum[0] = address;
         outbox.mNum[1] = readOrWrite;
         if (msgsnd(msqid, &outbox, sizeof(outbox.mNum), 0) == -1) {
@@ -93,13 +93,13 @@ int main(int argc, char *argv[]) {
         }
 
         // Receive message from oss
-        if (msgrcv(msqid, &inbox, sizeof(inbox.mNum), getpid(), 0) == -1) {
+        if (msgrcv(msqid, &inbox, sizeof(inbox.mNum), getppid(), 0) == -1) {
             perror("user_proc: Error: Failed to receive message from oss");
             exit(EXIT_FAILURE);
         }
 
         // Check if terminate every 1000 ± 100 memory references
-        int terminate = rand() % 1000;
+        int terminate = rand() % 1100;
         if (terminate >= 900) {
             // Return all memory to oss (it detects this with a nonblocking waitpid)
             outbox.mType = getpid();
@@ -116,6 +116,8 @@ int main(int argc, char *argv[]) {
                 exit(EXIT_FAILURE);
             }
             
+            printf("User process %d terminated\n", getpid());
+
             // Exit
             exit(EXIT_SUCCESS);
         }
