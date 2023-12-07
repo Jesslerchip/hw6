@@ -1,0 +1,39 @@
+## Jessica Seabolt 2023 CS4760 ##
+
+This project implements a parent process `oss` that launches and manages child `user_proc` processes.
+
+## Compiling
+
+To compile the programs, simply run:
+
+    make
+
+This will build the `oss` and `user_proc` executables.
+
+## Running
+
+To run `oss`, use:
+
+    ./oss [-h] [-n num procs] [-s max simul procs] [-f logfile]
+
+Where:
+
+-h prints help message
+-n sets the number of children to create (hard limit of 100)
+-s simul sets max number of workers to run simultaneously (hard limit of 18)
+-f sets a path to a log file
+
+For example:
+
+    ./oss -n 50 -s 13 -f log.txt
+
+This will allow up to 13 user_procs to run simultaneously, with 50 user_procs max. The file log.txt will be used to log the simulation.
+
+The oss parent process maintains a simulated system clock and process table in shared memory. It spawns user_procs processes up to the max limit, tracking them in the table. oss increments the clock and manages user_procs, moving them from blocked to ready, freeing up occupied space in the PCB, and keeping track of the simulation's statistics. It also handles a simulation of paging, assigning processes pages and handling requests to read and write. There is a simulated 256k limit on memory, with
+each frame being 1k. Each user_proc takes up 32k memory.
+
+The user_proc program runs and asks for resources until it decides to terminate. Oss handles these requests and deals with the memory implications.
+
+Every half second, the log will be updated. If 5 seconds have passed, the program will terminate.
+## Known Issues
+Lots of children love to terminate themselves when the program starts. Perhaps they don't want to live in such a crowded household.

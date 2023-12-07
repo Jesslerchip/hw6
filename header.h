@@ -1,3 +1,5 @@
+// Jessica Seabolt CMP_SCI 4760 Project 6
+
 #ifndef HEADER_H
 #define HEADER_H
 
@@ -11,10 +13,12 @@
 #include <sys/ipc.h>
 
 #define SHMKEY 0x1234
-#define MSGKEY 0x2468
+#define MSGKEY ftok("oss.c", 1)
 #define PAGE_SIZE 1024
 #define NUM_PAGES_PER_PROCESS 32
 #define NUM_FRAMES 256
+#define INITIAL_MESSAGE_SIZE 1024
+#define TEMP_BUFFER_SIZE 256
 
 // SystemClock struct
 struct SystemClock {
@@ -22,10 +26,16 @@ struct SystemClock {
 	unsigned int nanoseconds; // Simulated nanoseconds
 };
 
+struct messageData {
+    pid_t pid; // Process ID
+    int address; // Address
+    int readWrite; // Read or write
+};
+
 // Message queue struct
 struct msgbuf {
 	long mType; // Message type
-	int mNum[2]; // Message content
+    struct messageData mData; // Message data
 };
 
 // PCB struct
@@ -34,6 +44,7 @@ struct PCB {
     pid_t pid; // process id of this child
     int eventWaitSec; // when does its event happen?
     int eventWaitNano; // when does its event happen?
+    int neededPage; // what page does it need?
     int blocked; // is this process waiting on event?
 };
 

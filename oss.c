@@ -1,50 +1,8 @@
 // Jessica Seabolt 11/17/2023 CMP_SCI 4760 Project 6
 
-/* we will be implementing the FIFO (clock) page replacement algorithms. When a page-fault occurs,
-it will be necessary to swap in that page. If there are no empty frames, your algorithm will select the victim frame
-based on our FIFO replacement policy. This treats the frames as one large circular queue.
-Each frame should also have an additional dirty bit, which is set on writing to the frame. This bit is necessary
-to consider dirty bit optimization when determining how much time these operations take. The dirty bit will be
-implemented as a part of the page table. 
-
-This will be your main program and serve as the master process. You will start the operating system simulator (call
-the executable oss) as one main process who will create new children. We still have as our
-clock the 2 integers in shared memory.
-In the beginning, oss will allocate memory for system data structures, including page table. You will also need to
-create a fixed size array of structures for a page table for each process, with each process having 32k of memory
-and so requiring 32 entries as the pagesize is 1k. The page table should have all the required fields that may be
-implemented by bits or character data types.
-Assume that your system has a total memory of 256K. You will require a frame table of 256 structures, with any
-data required such as reference byte and dirty bit contained in that structure.
-After the resources have been set up, allow new processes in your system just like project 5. Make sure that you
-never have more than 18 user processes in the system. If you already have 18 processes, do not create any more until
-some process terminates (this is probably specified by your -s parameter, but never let that get above 18). Thus, if a
-user specifies an actual number of processes as 30, your hard limit will still limit it to no more than 18 processes at
-any time in the system. Your user processes execute concurrently and there is no scheduling performed. They run
-in a loop constantly till they have to terminate.
-oss will monitor all memory references from user processes (ie: messages sent to it from user processes) and if the
-reference results in a page fault, the process will be blocked till the page has been brought in. If there is no page
-fault, oss just increments the clock by 100 nanoseconds (just so if the user process looks at the clock, it is different
-than when it sent the request) and sends a message back. In case of page fault, oss queues the request to the device
-(ie: we simulate it being blocked). Each request for disk read/write takes about 14ms to be fulfilled. In case of
-page fault, the request is queued for the device and the process is suspended as no message is sent back and so the
-user process is just waiting on a msgrcv (ie: it has to wait for that event to
-happen). The request at the head of the queue is fulfilled once the clock has advanced by disk read/write time since
-the time the request was found at the head of the queue. The fulfillment of request is indicated by showing the
-page in memory in the page table. oss should periodically check if all the processes are queued for device and if so,
-advance the clock to fulfill the request at the head. We need to do this to resolve any possible soft deadlock (not an
-actual deadlock, we aren’t doing deadlock detection for this here!) in case memory is low and all processes end up
-waiting.
-While a page is referenced, oss performs other tasks on the page table as well such as updating the page reference,
-setting up dirty bit, checking if the memory reference is valid (all will be valid for this project) and whether the
-process has appropriate permissions on the frame (we aren’t doing frame locking, so all should be valid here), and
-so on.
-When a process terminates, oss should log its termination in the log file and also indicate its effective memory
-access time. oss should also print its memory map every second showing the allocation of frames. You can display
-unallocated frames by a period and allocated frame by a +. */
-
 #include <fcntl.h>
 #include <time.h>
+#include <string.h>
 
 #include "header.h"
 
@@ -60,6 +18,7 @@ struct msgbuf inbox, outbox;
 struct PCB processTable[MAX_PROCESSES];
 struct PageTable *pageTable;
 struct FrameTable *frameTable;
+struct timespec lastOutputTime, currentTime;
 
 /* INIT FUNCTIONS */
 
@@ -102,6 +61,11 @@ void initProcessTable() {
     // Initialize process table
     for (int i = 0; i < MAX_PROCESSES; i++) {
         processTable[i].occupied = 0;
+        processTable[i].pid = -1;
+        processTable[i].eventWaitSec = 0;
+        processTable[i].eventWaitNano = 0;
+        processTable[i].neededPage = -1;
+        processTable[i].blocked = 0;
     }
 }
 
@@ -119,7 +83,7 @@ void initPageTable() {
         pageTable[i].pid = -1;
         pageTable[i].frame = -1;
         pageTable[i].dirty = 0;
-        pageTable[i].valid = 0;
+        pageTable[i].valid = 1;
         pageTable[i].referenced = 0;
     }
 }
@@ -138,12 +102,27 @@ void initFrameTable() {
         frameTable[i].occupied = 0;
         frameTable[i].page = -1;
         frameTable[i].dirty = 0;
-        frameTable[i].valid = 0;
+        frameTable[i].valid = 1;
         frameTable[i].headOfQueue = 0;
     }
 
     // Set head of queue to first frame
     frameTable[0].headOfQueue = 1;
+}
+
+void initLogFile(char* logfile) {
+    // Open logfile
+    int fd = open(logfile, O_WRONLY | O_CREAT | O_TRUNC, 0666);
+    if (fd < 0) {
+        perror("open");
+        return;
+    }
+
+    // Wipe logfile for use
+    dprintf(fd, "Logfile for oss.c\n");
+
+    // Close logfile
+    close(fd);
 }
 
 /* END INIT FUNCTIONS */
@@ -198,6 +177,7 @@ void writeLog(const char* logfile, const char* message) {
 	}
 
 	dprintf(fd, "%s", message);
+    printf("%s", message);
 	close(fd);
 }
 
@@ -251,29 +231,22 @@ int main(int argc, char *argv[]) {
     srand(time(NULL));
 
     /* INITIALIZE */
-    
-    // Init shared memory
+
     initSharedMemory();
-
-    // Init system clock
     initSystemClock();
-    
-    // Init message queue
     initMessageQueue();
-
-    // Init process table
     initProcessTable();
- 
-    // Init page table
     initPageTable();
-    
-    // Init frame table
     initFrameTable();
+
+    // Set last output time
+    clock_gettime(CLOCK_MONOTONIC, &lastOutputTime);
+    unsigned int nextOutputTime = (lastOutputTime.tv_sec * 1000000000 + lastOutputTime.tv_nsec);
 
     // Init signal handlers
 	signal(SIGINT, handleSignal);
 	signal(SIGALRM, handleSignal);
-	alarm(5); // Set alarm for 3 seconds
+	alarm(5); // Set alarm for 5 seconds
 
     /* END INITIALIZE */
 
@@ -289,16 +262,13 @@ int main(int argc, char *argv[]) {
 	while ((opt = getopt(argc, argv, "hn:s:t:f:")) != -1) {
 		switch(opt) {
 			case 'h':
-				printf("Usage: %s [-h] [-n num procs] [-s max simul procs] [-t time in nanoseconds] [-f logfile]\n", argv[0]);
+				printf("Usage: %s [-h] [-n num procs] [-s max simul procs] [-f logfile]\n", argv[0]);
 				exit(0);
 			case 'n':
 				n = atoi(optarg);
 				break;
 			case 's':
 				s = atoi(optarg);
-				break;
-			case 't':
-				t = atoi(optarg);
 				break;
 			case 'f':
 				logfile = optarg;
@@ -316,22 +286,67 @@ int main(int argc, char *argv[]) {
 	if (!logfile) {
 		fprintf(stderr, "Error: No logfile specified.\n");
 		exit(1);
-	} else if (n < 1 || s < 1 || s > 20 || t < 1) {
+	} else if (n < 1 || s < 1 || s > 20) {
 		fprintf(stderr, "Error: Invalid arguments.\n");
 		exit(1);
 	}
 
     /* END ARGUMENTS */
 
+    /* INIT LOGFILE */
+
+    initLogFile(logfile);
+
+    /* END INIT LOGFILE */
+
     /* VARIABLES */
 
     int numActiveProcesses = 0; // Number of active processes
     int numLaunchedProcesses = 0; // Number of launched processes
-    int nextOutputTime = 0; // Next time to output stats to the log file and screen
 
     /* MAIN LOOP */   
 
     while (numActiveProcesses > 0 || (numLaunchedProcesses < n && numLaunchedProcesses <= 100)) {
+
+        // Check if any processes have terminated
+        int status;
+        int termPid = waitpid(-1, &status, WNOHANG);
+        if (termPid > 0 ) {
+            // Free up its resources and log its termination
+            for (int i = 0; i < MAX_PROCESSES; i++) {
+                if (processTable[i].pid == termPid) {
+                    // Free up its resources
+                    for (int j = 0; j < NUM_PAGES_PER_PROCESS * MAX_PROCESSES; j++) {
+                        if (pageTable[j].pid == termPid) {
+                            // Update page table entry and frame table entry
+                            frameTable[pageTable[j].frame].occupied = 0;
+                            frameTable[pageTable[j].frame].page = -1;
+                            frameTable[pageTable[j].frame].dirty = 0;
+                            frameTable[pageTable[j].frame].valid = 1;
+                            pageTable[j].pid = -1;
+                            pageTable[j].frame = -1;
+                            pageTable[j].dirty = 0;
+                            pageTable[j].valid = 1;
+                            pageTable[j].referenced = 0;
+                        }
+                    }
+                    for (int j = 0; j < MAX_PROCESSES; j++) {
+                        if (processTable[j].pid == termPid) {
+                            // Update PCB
+                            processTable[j].occupied = 0;
+                            processTable[j].pid = -1;
+                            processTable[j].eventWaitSec = 0;
+                            processTable[j].eventWaitNano = 0;
+                            processTable[j].blocked = 0;
+                        }
+                    }
+
+                    // Log its termination
+                    sprintf(logMessage, "OSS: Child %d terminated at time %d:%d\n", inbox.mData.pid, sysClock->seconds, sysClock->nanoseconds);
+                    writeLog(logfile, logMessage);
+                }
+            }
+        }
 
         // Determine if a new process should be launched
         if (numActiveProcesses < s && numActiveProcesses < MAX_PROCESSES && numLaunchedProcesses < n && numLaunchedProcesses <= 100) {
@@ -439,126 +454,13 @@ int main(int argc, char *argv[]) {
             }
         }
 
-        // Check if a process is waiting for an event. If so, check if the event has happened. If so, send a message back to the child.
+        // Check if a process is waiting for an event. If so, check if the event has happened. If so, swap in the page and send a message back to the child.
         for (int i = 0; i < MAX_PROCESSES; i++) {
             if (processTable[i].blocked == 1) {
                 // Check if the event has happened
-                if (processTable[i].eventWaitSec <= sysClock->seconds && processTable[i].eventWaitNano <= sysClock->nanoseconds) {
-                    // Send message back to child
-                    outbox.mType = processTable[i].pid;
-                    outbox.mNum[0] = 0;
-                    outbox.mNum[1] = 0;
-                    if (msgsnd(msqid, &outbox, sizeof(outbox.mNum), 0) == -1) {
-                        perror("oss: Error: Failed to send message to child");
-                        exit(EXIT_FAILURE);
-                    }
+                if (processTable[i].eventWaitSec * 1000000000 + processTable[i].eventWaitNano + 30000000 <= getClockTime()) {
 
-                    // Update PCB
-                    processTable[i].blocked = 0;
-                    processTable[i].eventWaitSec = 0;
-                    processTable[i].eventWaitNano = 0;
-                }
-            }
-        }
-
-        // Check if we have a message from a child. If so, and there is not a page fault, send a message back. If there is a pagefault, set up its waiting for an event.
-        if (msgrcv(msqid, &inbox, sizeof(inbox), 1, IPC_NOWAIT) != -1) {
-            // Check if the message is a terminate message
-            if (inbox.mNum[0] < 0) {
-                // Free up its resources and log its termination
-                for (int i = 0; i < MAX_PROCESSES; i++) {
-                    if (processTable[i].pid == inbox.mType) {
-                        // Free up its resources
-                        for (int j = 0; j < NUM_PAGES_PER_PROCESS * MAX_PROCESSES; j++) {
-                            if (pageTable[j].pid == inbox.mType) {
-                                // Update page table entry
-                                pageTable[j].pid = -1;
-                                pageTable[j].frame = -1;
-                                pageTable[j].dirty = 0;
-                                pageTable[j].valid = 0;
-                                pageTable[j].referenced = 0;
-                            }
-                        }
-                        for (int j = 0; j < NUM_FRAMES; j++) {
-                            if (frameTable[j].page == inbox.mType) {
-                                // Update frame table entry
-                                frameTable[j].occupied = 0;
-                                frameTable[j].page = -1;
-                                frameTable[j].dirty = 0;
-                                frameTable[j].valid = 0;
-                                frameTable[j].headOfQueue = 0;
-                            }
-                        }
-                        for (int j = 0; j < MAX_PROCESSES; j++) {
-                            if (processTable[j].pid == inbox.mType) {
-                                // Update PCB
-                                processTable[j].occupied = 0;
-                                processTable[j].pid = -1;
-                                processTable[j].eventWaitSec = 0;
-                                processTable[j].eventWaitNano = 0;
-                                processTable[j].blocked = 0;
-                            }
-                        }
-
-                        // Log its termination
-                        sprintf(logMessage, "OSS: Child %ld terminated at time %d:%d\n", inbox.mType, sysClock->seconds, sysClock->nanoseconds);
-                        writeLog(logfile, logMessage);
-                    }
-                }
-
-            // If the message is not a terminate message
-            } else {
-                // Extract the page from the message
-                int page = inbox.mNum[0] / 1024;
-
-                // Determine if there is a page fault by checking if the requested page is in a frame
-                int pageFault = 0;
-                if (pageTable[page].valid == 0 || pageTable[page].frame == -1) {
-                    pageFault = 1;
-                }
-
-
-                // If there is not a page fault
-                if (pageFault == 0) {
-                    // Check if the message is a read or write
-                    if (inbox.mNum[1] == 1) {
-                        // Set dirty bit
-                        for (int i = 0; i < NUM_PAGES_PER_PROCESS * MAX_PROCESSES; i++) {
-                            if (pageTable[i].pid == inbox.mType && pageTable[i].valid == 1 && pageTable[i].frame != -1) {
-                                pageTable[i].dirty = 1;
-
-                                // Add 20ms to simulated clock to simulate write time
-                                advanceClock(20000000);
-
-                                break;
-                            }
-                        }
-                    }
-
-                    // Update page table entry
-                    pageTable[page].referenced = 1;
-
-
-                    // Send message back to child
-                    outbox.mType = inbox.mType;
-                    outbox.mNum[0] = 0;
-                    outbox.mNum[1] = 0;
-                    if (msgsnd(msqid, &outbox, sizeof(outbox.mNum), 0) == -1) {
-                        perror("oss: Error: Failed to send message to child");
-                        exit(EXIT_FAILURE);
-                    }
-
-                // If there is a page fault, swap in the page
-                } else {
-                    // Set up its waiting for an event
-                    for (int i = 0; i < MAX_PROCESSES; i++) {
-                        if (processTable[i].pid == inbox.mType) {
-                            processTable[i].blocked = 1;
-                            processTable[i].eventWaitSec = sysClock->seconds;
-                            processTable[i].eventWaitNano = sysClock->nanoseconds + 14000000;
-                            break;
-                        }
-                    }
+                    int page = processTable[i].neededPage;
 
                     // Determine if there is an empty frame
                     int emptyFrame = -1;
@@ -571,33 +473,17 @@ int main(int argc, char *argv[]) {
 
                     // If there is an empty frame
                     if (emptyFrame != -1) {
-                        // Find the page table entry
-                        int pageTableEntry = -1;
-                        for (int i = 0; i < NUM_PAGES_PER_PROCESS * MAX_PROCESSES; i++) {
-                            if (pageTable[i].pid == inbox.mType && pageTable[i].valid == 1 && pageTable[i].frame == -1) {
-                                pageTableEntry = i;
-                                break;
-                            }
-                        }
-
-                        // If no page table entry was found
-                        if (pageTableEntry == -1) {
-                            perror("oss: Error: Failed to find page table entry");
-                            exit(EXIT_FAILURE);
-                        }
 
                         // Update page table entry
-                        pageTable[pageTableEntry].frame = emptyFrame;
+                        pageTable[page].frame = emptyFrame;
 
                         // Update frame table entry
-                        frameTable[emptyFrame].page = inbox.mType;
+                        frameTable[emptyFrame].page = page;
                         frameTable[emptyFrame].headOfQueue = 1;
 
                         // Send message back to child
-                        outbox.mType = inbox.mType;
-                        outbox.mNum[0] = 0;
-                        outbox.mNum[1] = 0;
-                        if (msgsnd(msqid, &outbox, sizeof(outbox.mNum), 0) == -1) {
+                        outbox.mType = inbox.mData.pid;
+                        if (msgsnd(msqid, &outbox, sizeof(outbox.mData), 0) == -1) {
                             perror("oss: Error: Failed to send message to child");
                             exit(EXIT_FAILURE);
                         }
@@ -617,57 +503,176 @@ int main(int argc, char *argv[]) {
                         pageTable[frameTable[frameTableEntry].page].frame = -1;
 
                         // Update frame table entry
-                        frameTable[frameTableEntry].page = inbox.mType;
+                        frameTable[frameTableEntry].page = page;
                         frameTable[frameTableEntry].headOfQueue = 1;
 
                         // Send message back to child
-                        outbox.mType = inbox.mType;
-                        outbox.mNum[0] = 0;
-                        outbox.mNum[1] = 0;
-                        if (msgsnd(msqid, &outbox, sizeof(outbox.mNum), 0) == -1) {
+                        outbox.mType = inbox.mData.pid;
+                        if (msgsnd(msqid, &outbox, sizeof(outbox.mData), 0) == -1) {
                             perror("oss: Error: Failed to send message to child");
                             exit(EXIT_FAILURE);
                         }
                     }
 
-                // Advance simulated clock 14ms
-                advanceClock(14000000);
 
+                    // Send message back to child
+                    outbox.mType = processTable[i].pid;
+                    if (msgsnd(msqid, &outbox, sizeof(outbox.mData), 0) == -1) {
+                        perror("oss: Error: Failed to send message to child");
+                        exit(EXIT_FAILURE);
+                    }
+
+                    // Update PCB
+                    processTable[i].blocked = 0;
+                    processTable[i].eventWaitSec = 0;
+                    processTable[i].eventWaitNano = 0;
+                    processTable[i].neededPage = -1;
                 }
             }
-
         }
 
-        // Every half a second, output the page table, frame table, and process table to the logfile and to the screen.
-        if (nextOutputTime <= getClockTime()) {
-            
-            // Output page table
-            printf("OSS: Page table:\n");
-            for (int i = 0; i < NUM_PAGES_PER_PROCESS * MAX_PROCESSES; i++) {
-                // Only print if valid
-                if (pageTable[i].valid == 1) {
-                    printf("OSS: Page table entry %d: pid=%d, frame=%d, dirty=%d, valid=%d, referenced=%d\n", i, pageTable[i].pid, pageTable[i].frame, pageTable[i].dirty, pageTable[i].valid, pageTable[i].referenced);
-                }
+        // Check if we have a message from a child. If so, and there is not a page fault, send a message back. If there is a pagefault, set up its waiting for an event.
+        if (msgrcv(msqid, &inbox, sizeof(inbox.mData), 1, IPC_NOWAIT) != -1) {
+
+            // Extract the page from the message
+            int page = inbox.mData.address / 1024;
+
+            // Determine if there is a page fault by checking if the requested page is in a frame
+            int pageFault = 0;
+            if (pageTable[page].valid == 0 || pageTable[page].frame == -1) {
+                pageFault = 1;
             }
+
+
+            // If there is not a page fault
+            if (pageFault == 0) {
+                // Check if the message is a read or write
+                if (inbox.mData.readWrite == 1) {
+                    // Set dirty bit
+                    for (int i = 0; i < NUM_PAGES_PER_PROCESS * MAX_PROCESSES; i++) {
+                        if (pageTable[i].pid == inbox.mData.pid && pageTable[i].valid == 1 && pageTable[i].frame != -1) {
+                            pageTable[i].dirty = 1;
+
+                            // Add 20ms to simulated clock to simulate write time
+                            advanceClock(20000000);
+
+                            break;
+                        }
+                    }
+                }
+                else {
+                    // Add 5ms to simulated clock to simulate read time
+                    advanceClock(10000000);
+                }
+
+                // Update page table entry
+                pageTable[page].referenced = 1;
+
+
+                // Send message back to child
+                outbox.mType = inbox.mData.pid;
+                if (msgsnd(msqid, &outbox, sizeof(outbox.mData), 0) == -1) {
+                    perror("oss: Error: Failed to send message to child");
+                    exit(EXIT_FAILURE);
+                }
+
+            // If there is a page fault, swap in the page
+            } else {
+                // Set up its waiting for an event
+                for (int i = 0; i < MAX_PROCESSES; i++) {
+                    if (processTable[i].pid == inbox.mType) {
+                        processTable[i].blocked = 1;
+                        processTable[i].eventWaitSec = sysClock->seconds;
+                        processTable[i].eventWaitNano = sysClock->nanoseconds + 14000000;
+                        processTable[i].neededPage = page;
+                        break;
+                    }
+                }
+
+            // Advance simulated clock 14ms
+            advanceClock(10000000);
+
+            }
+        }
+
+        clock_gettime(CLOCK_MONOTONIC, &currentTime);
+        unsigned int elapsedTime = (currentTime.tv_sec - lastOutputTime.tv_sec) * 1000000000 + (currentTime.tv_nsec - lastOutputTime.tv_nsec);
+
+
+        // Every half a second, output the page table, frame table, and process table to the logfile and to the screen
+        if (elapsedTime >= nextOutputTime) {
+
+            // Output simulated clock
+            sprintf(logMessage, "OSS: Simulated clock: %d:%d\n", sysClock->seconds, sysClock->nanoseconds);
+            writeLog(logfile, logMessage);
+
+            // Output page table
+            char *pageTableString = malloc(NUM_PAGES_PER_PROCESS * MAX_PROCESSES * 256 * sizeof(char));
+
+            if (pageTableString == NULL) {
+                perror("oss: Error: Failed to allocate memory for page table string");
+                exit(EXIT_FAILURE);
+            }
+
+            strcpy(pageTableString, "Page table:\n");
+
+            for (int i = 0; i < NUM_PAGES_PER_PROCESS * MAX_PROCESSES; i++) {
+                if (pageTable[i].pid != -1) {
+                    char pageTableEntryString[256];
+                    sprintf(pageTableEntryString, "OSS: Page table entry %d: pid=%d, frame=%d, dirty=%d, valid=%d, referenced=%d\n", i, pageTable[i].pid, pageTable[i].frame, pageTable[i].dirty, pageTable[i].valid, pageTable[i].referenced);
+                    strcat(pageTableString, pageTableEntryString);
+                }   
+            }
+
+            writeLog(logfile, pageTableString);
+            free(pageTableString);
 
             // Output frame table
-            printf("OSS: Frame table:\n");
-            for (int i = 0; i < NUM_FRAMES; i++) {
-                // Only print if occupied
-                if (frameTable[i].occupied == 1) {
-                    printf("OSS: Frame table entry %d: occupied=%d, page=%d, dirty=%d, valid=%d, headOfQueue=%d\n", i, frameTable[i].occupied, frameTable[i].page, frameTable[i].dirty, frameTable[i].valid, frameTable[i].headOfQueue);
-                }
+            char *frameTableString = malloc(NUM_FRAMES * 256 * sizeof(char));
+            if (frameTableString == NULL) {
+                perror("oss: Error: Failed to allocate memory for frame table string");
+                exit(EXIT_FAILURE);
             }
 
-            // Output process table
-            printf("OSS: Process table:\n");
-            for (int i = 0; i < MAX_PROCESSES; i++) {
-                printf("OSS: Process table entry %d: occupied=%d, pid=%d, eventWaitSec=%d, eventWaitNano=%d, blocked=%d\n", i, processTable[i].occupied, processTable[i].pid, processTable[i].eventWaitSec, processTable[i].eventWaitNano, processTable[i].blocked);
+            strcpy(frameTableString, "Frame table:\n");
+
+            for (int i = 0; i < NUM_FRAMES; i++) {
+                if (frameTable[i].occupied == 1) {
+                    char frameTableEntryString[256];
+                    sprintf(frameTableEntryString, "OSS: Frame table entry %d: occupied=%d, page=%d, dirty=%d, valid=%d, headOfQueue=%d\n", i, frameTable[i].occupied, frameTable[i].page, frameTable[i].dirty, frameTable[i].valid, frameTable[i].headOfQueue);
+                    strcat(frameTableString, frameTableEntryString);
+                }   
             }
+
+            writeLog(logfile, frameTableString);
+            free(frameTableString);
+
+            // Output process table
+            char *processTableString = malloc(MAX_PROCESSES * 256 * sizeof(char));
+            if (processTableString == NULL) {
+                perror("oss: Error: Failed to allocate memory for process table string");
+                exit(EXIT_FAILURE);
+            }
+
+            strcpy(processTableString, "Process table:\n");
+
+            for (int i = 0; i < MAX_PROCESSES; i++) {
+                if (processTable[i].occupied == 1) {
+                    char processTableEntryString[256];
+                    sprintf(processTableEntryString, "OSS: Process table entry %d: pid=%d, eventWaitSec=%d, eventWaitNano=%d, neededPage=%d, blocked=%d\n", i, processTable[i].pid, processTable[i].eventWaitSec, processTable[i].eventWaitNano, processTable[i].neededPage, processTable[i].blocked);
+                    strcat(processTableString, processTableEntryString);
+                }   
+            }
+
+            writeLog(logfile, processTableString);
+            free(processTableString);
 
             // Set next output time
             nextOutputTime += 500000000;
         }
+
+        // Advance simulated clock 10ms
+        advanceClock(10000000);
 
     }
 
