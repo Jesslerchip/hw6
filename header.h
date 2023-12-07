@@ -17,8 +17,6 @@
 #define PAGE_SIZE 1024
 #define NUM_PAGES_PER_PROCESS 32
 #define NUM_FRAMES 256
-#define INITIAL_MESSAGE_SIZE 1024
-#define TEMP_BUFFER_SIZE 256
 
 // SystemClock struct
 struct SystemClock {

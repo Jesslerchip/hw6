@@ -254,7 +254,6 @@ int main(int argc, char *argv[]) {
 
     int n = -1; // number of processes
 	int s = -1; // max simultaneous processes 
-	int t = -1; // time interval
 	char* logfile = NULL;
 
 	// Parse command line arguments
@@ -277,7 +276,7 @@ int main(int argc, char *argv[]) {
 	}
 
 	// Handle missing arguments
-	if (n == -1 || s == -1 || t == -1) {
+	if (n == -1 || s == -1) {
 		fprintf(stderr, "Error: Missing required arguments.\n");
 		exit(1);
 	} 
